@@ -547,7 +547,7 @@
             console.log('resultadosdispon', resultados);
             return resultados;
         }
-        
+
         function renderNumberBreakdowns(data) {
             const numberBreakdowns = document.getElementById('numberBreakdowns');
             var filtrada = data.filter((i) => i.CodEvento == '414');
@@ -616,22 +616,11 @@
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-body">
-                        <h5 class="card-title">Tempo Total Operação/Falhas/M. Preventiva</h5>
-                        <canvas id="chartMOFM" height="150"></canvas>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-body">
                         <h5 class="card-title">Tempo Médio de Operação (MTTO)</h5>
                         <canvas id="chartMTTO" height="150"></canvas>
                     </div>
                 </div>
             </div>
-
-        </div>
-        <div class="row mt-4">
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-body">
@@ -640,6 +629,10 @@
                     </div>
                 </div>
             </div>
+
+        </div>
+        <div class="row mt-4">
+           
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-body">
@@ -648,8 +641,6 @@
                     </div>
                 </div>
             </div>
-        </div>
-        <div class="row mt-4">
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-body">
@@ -658,6 +649,9 @@
                     </div>
                 </div>
             </div>
+        </div>
+        <div class="row mt-4">
+            
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-body">
