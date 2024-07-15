@@ -4,12 +4,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manutenção de Equipamentos</title>
+    <title>Painel de Indicadores</title>
+    <style>
+        body {
+            background-color: aliceblue !important;
+        }
+    </style>
     <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/alasql@0.7.0/dist/alasql.min.js"></script>
     <script>
         let jsonData = [];
-        let mttoChart, mttpmChart, mttqeChart, availabilityChart, equipamentosGerais, chartTaxaDisponibilidadePercentual, chartMOFM;
+        let mttoChart, mttpmChart, mttqeChart, availabilityChart, equipamentosGerais, chartTaxaDisponibilidadePercentual, ChartfalhasAtivas, db;
 
         async function loadData() {
             const apiKey = 'AIzaSyBSSxNV1h0oggNmh7FOlSUExFJHJGb4hOY';
@@ -28,23 +34,26 @@
                 return obj;
             });
 
-            console.log(jsonData);
+            alasql('CREATE TABLE eventos (CodEvento INT, DscEvento STRING, Equipamento STRING, FimEvento DATE, InicioEvento DATE)');
+            alasql('INSERT INTO eventos SELECT * FROM ?', [jsonData]);
+
+            console.log(alasql('SELECT * FROM eventos'));
+            console.log(alasql('SELECT * FROM eventos ORDER BY InicioEvento DESC'));
+
             renderDashboard(jsonData);
         }
 
         function renderDashboard(data) {
             renderEquipmentSelection(data);
 
-            renderMetrics(data);
+            renderMetrics(0, "", "", false);
         }
 
         function sortEquipmentTypes(types) {
             types.sort((a, b) => {
-                // Extrai o número após o "P" para comparação numérica
                 const numA = parseInt(a.substring(1));
                 const numB = parseInt(b.substring(1));
 
-                // Compara os números após o "P"
                 if (numA < numB) return -1;
                 if (numA > numB) return 1;
                 return 0;
@@ -56,7 +65,6 @@
         function renderEquipmentSelection(data) {
             var equipmentTypes = [...new Set(data.map(item => item.Equipamento))];
             equipmentTypes = sortEquipmentTypes(equipmentTypes);
-            console.log('equipments', equipmentTypes);
 
             const selectEquipment = document.getElementById('selectEquipment');
 
@@ -72,26 +80,21 @@
                 selectEquipment.appendChild(option);
             });
 
-            selectEquipment.addEventListener('change', () => {
-                const selectedEquipment = selectEquipment.value;
-                const filteredData = selectedEquipment == 0 ? data : data.filter(item => item.Equipamento === selectedEquipment);
-                console.log('filterred', filteredData, selectedEquipment)
-                destroyCharts();
-                renderMetrics(filteredData);
-            });
         }
 
-        function renderMetrics(data) {
+        function renderMetrics(data, data1, data2, temData) {
+            console.log(data);
             renderTotalEquipment(data);
-            renderNumberBreakdowns(data);
-            renderNumberPreventiveMaintenances(data);
-            renderChartMTTO(data);
-            renderChartMTTMP(data);
-            renderChartMTTQE(data);
-            renderChartAvailability(data);
-            renderChartTaxaDisponibilidade(data);
-            renderChartMOFM(data)
-
+            renderNumberBreakdowns(data, data1, data2, temData);
+            renderNumberPreventiveMaintenances(data, data1, data2, temData);
+            renderChartMTTO(data, data1, data2, temData);
+            renderChartMTTMP(data, data1, data2, temData);
+            renderChartMTTQE(data, data1, data2, temData);
+        
+            renderChartTaxaDisponibilidade(data, data1, data2, temData);
+            renderChartFailurePerDays(data, data1, data2, temData);
+            renderFalhasAtivas(data, data1, data2, temData);
+            return
         }
 
         function destroyCharts() {
@@ -110,83 +113,56 @@
             if (chartTaxaDisponibilidadePercentual) {
                 chartTaxaDisponibilidadePercentual.destroy();
             }
-            if (chartMOFM) {
-                chartMOFM.destroy();
+            if (ChartfalhasAtivas) {
+                ChartfalhasAtivas.destroy();
             }
         }
 
-        function converterDataBrasileiraParaDate(dataBrasileira) {
-            const partes = dataBrasileira.split(/[ /:]/); // Dividir por /, espaço e :
-
-            const data = new Date(partes[2], partes[1] - 1, partes[0], partes[3], partes[4], partes[5]);
-
-            return data;
-        }
-
-        function calcularMediaMTTO(eventos) {
-            const eventosFiltrados = eventos.filter(evento => evento.CodEvento === '264');
-            const mttoPorEquipamento = {};
-
-            eventosFiltrados.forEach(evento => {
-                const inicio = converterDataBrasileiraParaDate(evento.InicioEvento);
-                const fim = converterDataBrasileiraParaDate(evento.FimEvento);
-
-                if (!isNaN(inicio) && !isNaN(fim)) {
-                    const diffMinutos = (fim - inicio) / (1000 * 60 * 60); // Diferença em minutos
-                    if (!mttoPorEquipamento[evento.Equipamento]) {
-                        mttoPorEquipamento[evento.Equipamento] = [];
-                    }
-                    mttoPorEquipamento[evento.Equipamento].push(diffMinutos);
-                } else {
-                    console.error(`Data inválida para evento: ${JSON.stringify(evento)}`);
-                }
-            });
-
-            const mediaMTTO = {};
-            for (const equipamento in mttoPorEquipamento) {
-                const tempos = mttoPorEquipamento[equipamento];
-                const media = tempos.reduce((total, tempo) => total + tempo, 0) / tempos.length;
-                mediaMTTO[equipamento] = media;
-            }
-
-            return mediaMTTO;
-        }
-
-        function renderChartMTTO(data) {
+        function renderChartMTTO(data, formattedStartDate, formattedEndDate, temData) {
             const ctxMTTO = document.getElementById('chartMTTO').getContext('2d');
-            const equipmentLabels = data.map(item => item.Equipamento);
-            var equipmentTypes = [...new Set(data.map(item => item.Equipamento))];
-            equipmentTypes = sortEquipmentTypes(equipmentTypes);
-            console.log('rquips', equipmentTypes)
-            const eventosFiltrados = data.filter(evento => evento.CodEvento === '264');
-
-            const mttoPorEquipamento = eventosFiltrados.reduce((resultado, evento) => {
-                const tempoInicio = converterDataBrasileiraParaDate(evento.InicioEvento);
-                const tempoFim = converterDataBrasileiraParaDate(evento.FimEvento);
-                const diffMinutos = (tempoFim - tempoInicio) / (1000 * 60 * 60); 
-
-                resultado[evento.Equipamento] = (resultado[evento.Equipamento] || []);
-                resultado[evento.Equipamento].push(diffMinutos);
-                return resultado;
-            }, {});
-
-            const mediaMTTO = {};
-            for (const equipamento in mttoPorEquipamento) {
-                const tempos = mttoPorEquipamento[equipamento];
-                const media = tempos.reduce((total, tempo) => total + tempo, 0) / tempos.length;
-                mediaMTTO[equipamento] = media;
+            var equipmentTypes = data == 0 ? alasql('SELECT DISTINCT Equipamento FROM eventos ORDER BY Equipamento;') 
+            : alasql(`SELECT DISTINCT Equipamento FROM eventos where Equipamento == '${data}' ORDER BY Equipamento;`)
+            let equipamentos = equipmentTypes.map(item => item.Equipamento);
+            var mediaMTTO;
+            let temposMTTO;
+            if(!temData){
+                mediaMTTO = data == 0 ? alasql("SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MTTO FROM eventos WHERE CodEvento = '264' GROUP BY Equipamento ORDER BY Equipamento ;") :
+                    alasql(`SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MTTO FROM eventos WHERE CodEvento = '264' AND Equipamento == '${data}' GROUP BY Equipamento ORDER BY Equipamento ;`);
+                temposMTTO = mediaMTTO.map(item => item.MTTO);
+            }else{
+                mediaMTTO = data == 0 ? alasql(`SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MTTO
+                 FROM eventos WHERE CodEvento = '264' AND
+                  DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                 GROUP BY Equipamento ORDER BY Equipamento ;`) :
+                    alasql(`SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MTTO 
+                    FROM eventos 
+                    WHERE CodEvento = '264' AND Equipamento == '${data}'
+                    AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                    AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                    GROUP BY Equipamento ORDER BY Equipamento ;`);
+                temposMTTO = mediaMTTO.map(item => item.MTTO);
             }
 
-            console.log('Média do tempo de manutenção (MTTO) por equipamento:');
-            console.log(mediaMTTO);
+            var dataMap = {};
+    
+            equipamentos.forEach(equip => {
+                dataMap[equip] = 0; // Inicializa com 0 ou valor padrão desejado
+            });
+            
+            mediaMTTO.forEach(item => {
+                dataMap[item.Equipamento] = item.MTTO;
+            });
+            
+            temposMTTO = equipamentos.map(equip => dataMap[equip]);
 
             mttoChart = new Chart(ctxMTTO, {
                 type: 'bar',
                 data: {
-                    labels: equipmentTypes,
+                    labels: equipamentos,
                     datasets: [{
                         label: 'Tempo Médio de Operação (MTTO)',
-                        data: mediaMTTO,
+                        data: temposMTTO,
                         backgroundColor: 'rgba(255, 99, 132, 0.5)',
                         borderColor: 'rgba(255, 99, 132, 1)',
                         borderWidth: 1
@@ -195,42 +171,54 @@
             });
         }
 
-        function renderChartMTTMP(data) {
+        function renderChartMTTMP(data, formattedStartDate, formattedEndDate, temData) {
             const ctxMTTMP = document.getElementById('chartMTTMP').getContext('2d');
-            const equipmentLabels = data.map(item => item.Equipamento);
-            var equipmentTypes = [...new Set(data.map(item => item.Equipamento))];
-            equipmentTypes = sortEquipmentTypes(equipmentTypes);
-
-            const eventosFiltrados = data.filter(evento => evento.CodEvento === '241');
-
-            const mttoPorEquipamento = eventosFiltrados.reduce((resultado, evento) => {
-                const tempoInicio = converterDataBrasileiraParaDate(evento.InicioEvento);
-                const tempoFim = converterDataBrasileiraParaDate(evento.FimEvento);
-                const diffMinutos = (tempoFim - tempoInicio) / (1000 * 60 * 60); // Diferença em minutos
-
-                resultado[evento.Equipamento] = (resultado[evento.Equipamento] || []);
-                resultado[evento.Equipamento].push(diffMinutos);
-                return resultado;
-            }, {});
-
-            const MTTMP = {};
-            for (const equipamento in mttoPorEquipamento) {
-                const tempos = mttoPorEquipamento[equipamento];
-                const media = tempos.reduce((total, tempo) => total + tempo, 0) / tempos.length;
-                MTTMP[equipamento] = media;
+            var equipmentTypes = data == 0 ? alasql('SELECT DISTINCT Equipamento FROM eventos ORDER BY Equipamento;') : alasql(`SELECT DISTINCT Equipamento FROM eventos where Equipamento == '${data}' ORDER BY Equipamento;`)
+            let equipamentos = equipmentTypes.map(item => item.Equipamento);
+            let mediaMTTMP;
+            let temposMTTMP
+            if(!temData)
+            {
+                mediaMTTMP = data == 0 ? alasql("SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MTTMP FROM eventos WHERE CodEvento = '241' GROUP BY Equipamento ORDER BY Equipamento;") :
+                alasql(`SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MTTMP FROM eventos WHERE CodEvento = '241' AND Equipamento == '${data}' GROUP BY Equipamento ORDER BY Equipamento;`);
+                temposMTTMP = mediaMTTMP.map(item => item.MTTMP);
+            }else
+            {
+                mediaMTTMP = data == 0 ? alasql(`SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MTTMP 
+                FROM eventos 
+                WHERE CodEvento = '241' 
+                AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY Equipamento ORDER BY Equipamento;`)
+                 :
+                alasql(`SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MTTMP
+                 FROM eventos 
+                 WHERE CodEvento = '241' AND Equipamento == '${data}' 
+                AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY Equipamento ORDER BY Equipamento;`);
+                temposMTTMP = mediaMTTMP.map(item => item.MTTMP);
             }
 
-            console.log('Tempo Médio de Manutenção Preventiva (MTTMP)');
-            console.log(MTTMP);
-
+            var dataMap = {};
+    
+            equipamentos.forEach(equip => {
+                dataMap[equip] = 0; 
+            });
+            
+            mediaMTTMP.forEach(item => {
+                dataMap[item.Equipamento] = item.MTTMP;
+            });
+            
+            temposMTTMP = equipamentos.map(equip => dataMap[equip]);
 
             mttpmChart = new Chart(ctxMTTMP, {
                 type: 'bar',
                 data: {
-                    labels: equipmentTypes,
+                    labels: equipamentos,
                     datasets: [{
                         label: 'Tempo Médio de Manutenção Preventiva (MTTMP)',
-                        data: MTTMP,
+                        data: temposMTTMP,
                         backgroundColor: 'rgba(54, 162, 235, 0.5)',
                         borderColor: 'rgba(54, 162, 235, 1)',
                         borderWidth: 1
@@ -239,60 +227,52 @@
             });
         }
 
-
-        function calcularMTTQE(dados) {
-            const totalPorEquipamento = {};
-            const countPorEquipamento = {};
-
-            dados.forEach(evento => {
-                    if(evento.FimEvento != null){
-                        const equipamento = evento.Equipamento;
-                        const inicioEvento = converterDataBrasileiraParaDate(evento.InicioEvento);
-                        const fimEvento = converterDataBrasileiraParaDate(evento.FimEvento);
-                        const diffMinutes  = (fimEvento - inicioEvento) / (1000 * 60 * 60);
-                        console.log(diffMinutes)
-                        if (!totalPorEquipamento[equipamento]) {
-                            totalPorEquipamento[equipamento] = 0;
-                            countPorEquipamento[equipamento] = 0;
-                        }
-                        totalPorEquipamento[equipamento] += diffMinutes;
-                        countPorEquipamento[equipamento]++;
-                } 
-               
-            });
-
-            const mttqePorEquipamento = {};
-
-            // Calcular a média para cada equipamento
-            Object.keys(totalPorEquipamento).forEach(equipamento => {
-                const total = totalPorEquipamento[equipamento];
-                const count = countPorEquipamento[equipamento];
-                const mttqe = total / count;
-                mttqePorEquipamento[equipamento] = mttqe;
-            });
-
-            return mttqePorEquipamento;
-        }
-
-
-        function renderChartMTTQE(data) {
+        function renderChartMTTQE(data, formattedStartDate, formattedEndDate, temData) {
             const ctxMTTQE = document.getElementById('chartMTTQE').getContext('2d');
-            const equipmentLabels = data.map(item => item.Equipamento);
-            var equipmentTypes = [...new Set(data.map(item => item.Equipamento))];
-            equipmentTypes = sortEquipmentTypes(equipmentTypes);
+            var equipmentTypes = data == 0 ? alasql('SELECT DISTINCT Equipamento FROM eventos ORDER BY Equipamento;') : alasql(`SELECT DISTINCT Equipamento FROM eventos where Equipamento == '${data}' ORDER BY Equipamento;`)
+            let equipamentos = equipmentTypes.map(item => item.Equipamento);
+            let temposMTTQE;
+            let mediaMTTQE;
+            if(!temData)
+            {
+                mediaMTTQE = data == 0 ? alasql("SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MediaTempoEntreEventos FROM eventos WHERE CodEvento = '414' AND FimEvento IS NOT NULL GROUP BY Equipamento ORDER BY Equipamento; ") :
+                alasql(`SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MediaTempoEntreEventos FROM eventos WHERE CodEvento = '414'  AND Equipamento == '${data}' AND FimEvento IS NOT NULL GROUP BY Equipamento ORDER BY Equipamento;`);
+                temposMTTQE = mediaMTTQE.map(item => item.MediaTempoEntreEventos);
+            }
+            else
+            {
+                mediaMTTQE = data == 0 ? alasql(`SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MediaTempoEntreEventos 
+                FROM eventos WHERE CodEvento = '414'  
+                AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY Equipamento ORDER BY Equipamento; `) :
+                alasql(`SELECT Equipamento, AVG(DATEDIFF(HOUR, InicioEvento, FimEvento)) AS MediaTempoEntreEventos 
+                FROM eventos WHERE CodEvento = '414'  AND Equipamento == '${data}' AND FimEvento IS NOT NULL
+                AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY Equipamento ORDER BY Equipamento;`);
+                temposMTTQE = mediaMTTQE.map(item => item.MediaTempoEntreEventos);
+            }
 
-            const eventosFiltrados = data.filter(evento => evento.CodEvento === '414');
-
-            const resultadoMTTQE = calcularMTTQE(eventosFiltrados);
-            console.log('resttt', resultadoMTTQE);
+            var dataMap = {};
+    
+            equipamentos.forEach(equip => {
+                dataMap[equip] = 0; 
+            });
+            
+            mediaMTTQE.forEach(item => {
+                dataMap[item.Equipamento] = item.MediaTempoEntreEventos;
+            });
+            
+            temposMTTQE = equipamentos.map(equip => dataMap[equip]);
 
             mttqeChart = new Chart(ctxMTTQE, {
                 type: 'bar',
                 data: {
-                    labels: equipmentTypes,
+                    labels: equipamentos,
                     datasets: [{
                         label: 'Tempo Médio de Quebra de Equipamento (MTTQE)',
-                        data: resultadoMTTQE,
+                        data: temposMTTQE,
                         backgroundColor: 'rgba(255, 206, 86, 0.5)',
                         borderColor: 'rgba(255, 206, 86, 1)',
                         borderWidth: 1
@@ -301,178 +281,199 @@
             });
         }
 
-        function renderChartMOFM(data) {
-            const ctxMOFM = document.getElementById('chartMOFM').getContext('2d');
-            const equipmentLabels = data.map(item => item.Equipamento);
-            var equipmentTypes = [...new Set(data.map(item => item.Equipamento))];
-            equipmentTypes = sortEquipmentTypes(equipmentTypes);
-
-            const eventosFiltrados = data.filter(evento => evento.CodEvento === '241');
-
-            const mttoPorEquipamento = eventosFiltrados.reduce((resultado, evento) => {
-                const tempoInicio = converterDataBrasileiraParaDate(evento.InicioEvento);
-                const tempoFim = converterDataBrasileiraParaDate(evento.FimEvento);
-                const diffMinutos = (tempoFim - tempoInicio) / (1000 * 60 * 60); 
-
-                resultado[evento.Equipamento] = (resultado[evento.Equipamento] || []);
-                resultado[evento.Equipamento].push(diffMinutos);
-                return resultado;
-            }, {});
-
-            console.log('mto', mttoPorEquipamento)
-
-            const mttqeData = {};
-            for (const equipamento in mttoPorEquipamento) {
-                const tempos = mttoPorEquipamento[equipamento];
-                const media = tempos.reduce((total, tempo) => total + tempo, 0) / tempos.length;
-                mttqeData[equipamento] = media;
-            }
-
-            /////////////////////////////////////
-
-            const eventosFiltrados2 = data.filter(evento => evento.CodEvento === '414');
-
-            const resultadoMTTQE = calcularMTTQE(eventosFiltrados2);
-            console.log('resttt', resultadoMTTQE);
+        function renderFalhasAtivas(data, formattedStartDate, formattedEndDate, temData) {
+            const ctxMTTQE = document.getElementById('chartFalhasAtivas').getContext('2d');
+            var equipmentTypes = data == 0 ? alasql('SELECT DISTINCT Equipamento FROM eventos ORDER BY Equipamento;') : alasql(`SELECT DISTINCT Equipamento FROM eventos where Equipamento == '${data}' ORDER BY Equipamento;`)
+            let equipamentos = equipmentTypes.map(item => item.Equipamento);
+            let tempoDias;
+            let media;
+        
+            media = data == 0 ? alasql(`Select Equipamento,   ROUND(DATEDIFF(day, DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))), DATE(now()))) as DATA, 
+            InicioEvento
+            from eventos
+            where FimEvento is null and CodEvento = '414'`) :
+            alasql(`Select Equipamento,  
+            ROUND(DATEDIFF(day, DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))), DATE(now()))) as DATA, InicioEvento
+            from eventos
+            where FimEvento is null and CodEvento = '414' AND Equipamento == '${data}'  
+            ORDER BY Equipamento`);
+            tempoDias = media.map(item => item.DATA);
 
 
-            console.log('Tempo Médio de Quebra de Equipamento (MTTQE)');
-            console.log(mttqeData);
+            var dataMap = {};
+    
+            equipamentos.forEach(equip => {
+                dataMap[equip] = 0; 
+            });
+            
+            media.forEach(item => {
+                dataMap[item.Equipamento] = item.DATA;
+            });
+            
+            tempoDias = equipamentos.map(equip => dataMap[equip]);
 
-            chartMOFM = new Chart(ctxMOFM, {
+            console.log('datas', media, tempoDias)
+
+            ChartfalhasAtivas = new Chart(ctxMTTQE, {
                 type: 'bar',
                 data: {
-                    labels: equipmentTypes,
+                    labels: equipamentos,
                     datasets: [{
-                        label: 'Tempo Médio de Manutenção Preventiva (MTTMP)',
-                        data: mttqeData,
-                        backgroundColor: 'rgba(54, 162, 235, 0.5)',
-                        borderColor: 'rgba(54, 162, 235, 1)',
-                        borderWidth: 1
-                    },
-                    {
-                        label: 'Tempo Médio de Quebra de Equipamento (MTTQE)',
-                        data: resultadoMTTQE,
-                        backgroundColor: 'rgba(255, 206, 86, 0.5)',
-                        borderColor: 'rgba(255, 206, 86, 1)',
+                        label: 'Taxa de Dias Equipamentos Com falhas Ativas',
+                        data: tempoDias,
+                        backgroundColor: 'rgba(184, 0, 0, 0.8)',
+                        borderColor: 'rgba(255, 99, 132, 1)',
                         borderWidth: 1
                     }]
                 }
             });
         }
 
-
-
-        function calcularTaxaDeFalha(data) {
-            const equipamentos = {};
-            const resultados = [];
-
-            data.forEach(item => {
-                const equipamento = item.Equipamento;
-                const codEvento = parseInt(item.CodEvento);
-                const inicioEvento = converterDataBrasileiraParaDate(item.InicioEvento);
-                const fimEvento = item.FimEvento != null ? converterDataBrasileiraParaDate(item.FimEvento) : null;
-
-                if (!equipamentos[equipamento]) {
-                    equipamentos[equipamento] = {
-                        totalFalhas: 0,
-                        periodoDias: 0
-                    };
-                }
-
-                if (codEvento === 414) {
-                    equipamentos[equipamento].totalFalhas++;
-
-                    if (equipamentos[equipamento].periodoDias === 0) {
-                        equipamentos[equipamento].inicioPeriodo = inicioEvento;
-                        equipamentos[equipamento].fimPeriodo = fimEvento;
-                    } else {
-                        if (fimEvento > equipamentos[equipamento].fimPeriodo) {
-                            equipamentos[equipamento].fimPeriodo = fimEvento;
-                        }
-                    }
-
-                    if (equipamentos[equipamento].inicioPeriodo && equipamentos[equipamento].fimPeriodo) {
-                        const diffTime = Math.abs(equipamentos[equipamento].fimPeriodo - equipamentos[equipamento].inicioPeriodo);
-                        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                        equipamentos[equipamento].periodoDias = diffDays;
-                    }
-                }
-            });
-
-            Object.keys(equipamentos).forEach(equipamento => {
-                const { totalFalhas, periodoDias } = equipamentos[equipamento];
-
-                const taxaFalhaPorDia = totalFalhas / periodoDias;
-
-                const taxaFalhaPorDiaArredondada = Math.round(taxaFalhaPorDia * 100) / 100;
-
-                resultados.push({
-                    Equipamento: equipamento,
-                    TotalFalhas: totalFalhas,
-                    PeriodoDias: periodoDias,
-                    TaxaFalhaPorDia: taxaFalhaPorDiaArredondada
-                });
-            });
-
-            resultados.sort((a, b) => {
-                const equipA = parseInt(a.Equipamento.replace("P", ""));
-                const equipB = parseInt(b.Equipamento.replace("P", ""));
-                return equipA - equipB;
-            });
-
-            console.log('rest', resultados)
-            return resultados;
-        }
-
-
-        function renderChartAvailability(data) {
-            const eventosFiltrados = data.filter(evento => evento.CodEvento === '264');
-            const disponibilidadeEquipamentos = calcularTaxaDeFalha(data);
-            console.log('disp', disponibilidadeEquipamentos)
+        function renderChartFailurePerDays(data, formattedStartDate, formattedEndDate, temData) {
             const ctxAvailability = document.getElementById('chartAvailability').getContext('2d');
-            const equipmentLabels = disponibilidadeEquipamentos.map(item => item.Equipamento);
-            const availabilityData = disponibilidadeEquipamentos.map(item => parseFloat(item.TaxaFalhaPorDia));
-            var equipmentTypes = [...new Set(data.map(item => item.Equipamento))];
-            equipmentTypes = sortEquipmentTypes(equipmentTypes);
+            var equipmentTypes = data == 0 ? alasql('SELECT DISTINCT Equipamento FROM eventos ORDER BY Equipamento;') : alasql(`SELECT DISTINCT Equipamento FROM eventos where Equipamento == '${data}' ORDER BY Equipamento;`)
+            let equipamentos = equipmentTypes.map(item => item.Equipamento);
+            let temposAvailability;
+            let taxaDias;
+
+            if(!temData){
+                var mediaAvailability = data == 0 ?
+                alasql(`
+                SELECT 
+                    Equipamento,
+                    COUNT(*) AS QuantidadeFalhas,
+                    DATEDIFF(day, MIN(CONVERT(DATE, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2))), MAX(CONVERT(DATE, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2)))) AS DiasMonitoramento,
+                      ROUND(COUNT(*) * 100.0 / NULLIF(DATEDIFF(day, MIN(CONVERT(DATE, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2))), MAX(CONVERT(DATE, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2)))), 0)) AS TaxaFalhaPorDia
+                FROM eventos
+                WHERE CodEvento = '414' AND FimEvento IS NOT NULL
+                GROUP BY Equipamento
+                ORDER BY Equipamento
+            `) :
+                alasql(`
+                SELECT 
+                    Equipamento,
+                    COUNT(*) AS QuantidadeFalhas,
+                    DATEDIFF(day, MIN(CONVERT(DATE, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2))), MAX(CONVERT(DATE, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2)))) AS DiasMonitoramento,
+                      ROUND(COUNT(*) * 100.0 / NULLIF(DATEDIFF(day, MIN(CONVERT(DATE, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2))), MAX(CONVERT(DATE, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2)))), 0)) AS TaxaFalhaPorDia
+                FROM eventos
+                WHERE CodEvento = '414' AND FimEvento IS NOT NULL AND Equipamento == '${data}'
+                GROUP BY Equipamento
+                ORDER BY Equipamento
+            `)
+            temposAvailability = mediaAvailability.map(item => item.TaxaFalhaPorDia);
+            taxaDias = mediaAvailability.map(item => item.TaxaFalhaPorDia);
+            }
+            else
+            {
+                var mediaAvailability = data == 0 ?
+                alasql(`
+                SELECT 
+                    Equipamento,
+                    COUNT(*) AS QuantidadeFalhas,
+                    DATEDIFF(day, MIN(CONVERT(DATE, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2))), MAX(CONVERT(DATE, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2)))) AS DiasMonitoramento,
+                      ROUND(COUNT(*) * 100.0 / NULLIF(DATEDIFF(day, MIN(CONVERT(DATE, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2))), MAX(CONVERT(DATE, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2)))), 0)) AS TaxaFalhaPorDia
+                FROM eventos
+                WHERE CodEvento = '414' AND FimEvento IS NOT NULL
+                AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY Equipamento
+                ORDER BY Equipamento
+            `) :
+                alasql(`
+                    SELECT 
+                        Equipamento,
+                        COUNT(*) AS QuantidadeFalhas,
+                        DATEDIFF(day, MIN(CONVERT(DATE, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2))), MAX(CONVERT(DATE, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2)))) AS DiasMonitoramento,
+                        ROUND(COUNT(*) * 100.0 / NULLIF(DATEDIFF(day, MIN(CONVERT(DATE, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2))), MAX(CONVERT(DATE, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2)))), 0)) AS TaxaFalhaPorDia
+                    FROM eventos
+                    WHERE CodEvento = '414' AND FimEvento IS NOT NULL AND Equipamento == '${data}'
+                    AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                    AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                    GROUP BY Equipamento
+                    ORDER BY Equipamento
+                `)
+                temposAvailability = mediaAvailability.map(item => item.TaxaFalhaPorDia);
+                taxaDias = mediaAvailability.map(item => item.TaxaFalhaPorDia);
+            }
 
 
+            var dataMap = {};
+    
+            equipamentos.forEach(equip => {
+                dataMap[equip] = 0; 
+            });
+            
+            mediaAvailability.forEach(item => {
+                dataMap[item.Equipamento] = item.TaxaFalhaPorDia;
+            });
+            
+            temposAvailability = equipamentos.map(equip => dataMap[equip]);
+
+            console.log('media MTTO', mediaAvailability, temposAvailability)
+
+            console.log('falhas por dia', mediaAvailability)
             availabilityChart = new Chart(ctxAvailability, {
                 type: 'bar',
                 data: {
-                    labels: equipmentTypes,
+                    labels: equipamentos,
                     datasets: [{
                         label: 'Taxa de Falhas por Dia (%)',
-                        data: availabilityData,
-                        backgroundColor: 'rgba(75, 192, 192, 0.5)',
-                        borderColor: 'rgba(75, 192, 192, 1)',
+                        data: temposAvailability,
+                        backgroundColor: 'rgba(78, 355, 192, 0.5)',
+                        borderColor: 'rgba(75, 355, 192, 1)',
                         borderWidth: 1
                     }]
                 }
-
             });
         }
 
-        function renderChartTaxaDisponibilidade(data) {
-            const disponibilidadeEquipamentos = calcularTaxaDisponibilidade(data);
-
-            console.log('xx', disponibilidadeEquipamentos);
-
+        function renderChartTaxaDisponibilidade(data, formattedStartDate, formattedEndDate, temData) {
             const TaxaDisponibilidadePercentual = document.getElementById('chartTaxaDisponibilidadePercentual').getContext('2d');
-            const equipmentLabels = disponibilidadeEquipamentos.map(item => item.Equipamento);
-            const availabilityData = disponibilidadeEquipamentos.map(item => parseFloat(item.TaxaDisponibilidadePercentual));
-            const totalDaysData = disponibilidadeEquipamentos.map(item => item.DiasMonitoramento);
+            var equipmentTypes = data == 0 ? alasql('SELECT DISTINCT Equipamento FROM eventos ORDER BY Equipamento;') : alasql(`SELECT DISTINCT Equipamento FROM eventos where Equipamento == '${data}' ORDER BY Equipamento;`)
+            let equipamentos = equipmentTypes.map(item => item.Equipamento);
+            let mediaAvailability ;
+            let temposAvailability;
 
-            var equipmentTypes = [...new Set(data.map(item => item.Equipamento))];
-            equipmentTypes = sortEquipmentTypes(equipmentTypes);
+            if(!temData){
+                mediaAvailability = data == 0 ? alasql("SELECT Equipamento, ROUND((SUM(CASE WHEN CodEvento = '264' THEN DATEDIFF(HOUR, InicioEvento, FimEvento) ELSE 0 END) /  SUM(DATEDIFF(HOUR, InicioEvento, FimEvento))) * 100) AS Disponibilidade FROM  eventos GROUP BY  Equipamento ORDER BY Equipamento; ") :
+                alasql(`SELECT Equipamento, ROUND((SUM(CASE WHEN CodEvento = '264' THEN DATEDIFF(HOUR, InicioEvento, FimEvento) ELSE 0 END) /  SUM(DATEDIFF(HOUR, InicioEvento, FimEvento))) * 100) AS Disponibilidade FROM  eventos where Equipamento == '${data}' GROUP BY Equipamento ORDER BY Equipamento;; `);
+                temposAvailability = mediaAvailability.map(item => item.Disponibilidade);
+            }
+            else
+            {
+                mediaAvailability = data == 0 ? alasql(`SELECT Equipamento, ROUND((SUM(CASE WHEN CodEvento = '264' THEN DATEDIFF(HOUR, InicioEvento, FimEvento) ELSE 0 END) /  SUM(DATEDIFF(HOUR, InicioEvento, FimEvento))) * 100) AS Disponibilidade 
+                FROM  eventos 
+                WHERE DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY  Equipamento ORDER BY Equipamento; `) :
+                alasql(`SELECT Equipamento, ROUND((SUM(CASE WHEN CodEvento = '264' THEN DATEDIFF(HOUR, InicioEvento, FimEvento) ELSE 0 END) /  SUM(DATEDIFF(HOUR, InicioEvento, FimEvento))) * 100) AS Disponibilidade 
+                FROM  eventos 
+                where Equipamento == '${data}'
+                AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY Equipamento ORDER BY Equipamento;; `);
+                temposAvailability = mediaAvailability.map(item => item.Disponibilidade);
+            }
+
+            var dataMap = {};
+    
+            equipamentos.forEach(equip => {
+                dataMap[equip] = 0; 
+            });
+            
+            mediaAvailability.forEach(item => {
+                dataMap[item.Equipamento] = item.Disponibilidade;
+            });
+            
+            temposAvailability = equipamentos.map(equip => dataMap[equip]);
 
             chartTaxaDisponibilidadePercentual = new Chart(TaxaDisponibilidadePercentual, {
                 type: 'bar',
                 data: {
-                    labels: equipmentTypes,
+                    labels: equipamentos,
                     datasets: [{
                         label: 'Taxa de Disponibilidade (%) ',
-                        data: availabilityData,
+                        data: temposAvailability,
                         backgroundColor: 'rgba(75, 192, 192, 0.5)',
                         borderColor: 'rgba(75, 192, 192, 1)',
                         borderWidth: 1
@@ -482,7 +483,6 @@
                     tooltips: {
                         callbacks: {
                             label: function (tooltipItem, data) {
-                                console.log('')
                                 const equipamento = data.labels[tooltipItem.index];
                                 const taxaDisponibilidade = data.datasets[tooltipItem.datasetIndex].data[tooltipItem.index];
                                 const diasMonitoramento = totalDaysData[tooltipItem.index];
@@ -494,80 +494,112 @@
             });
         }
 
-        function calcularTaxaDisponibilidade(data) {
-            const equipamentos = {};
-            const resultados = [];
 
-            data.forEach(item => {
-                const equipamento = item.Equipamento;
-                const codEvento = parseInt(item.CodEvento);
-                const inicioEvento = converterDataBrasileiraParaDate(item.InicioEvento);
-                const fimEvento = item.FimEvento ? converterDataBrasileiraParaDate(item.FimEvento) : null;
-
-                if (!equipamentos[equipamento]) {
-                    equipamentos[equipamento] = {
-                        totalMinutosOperacao: 0,
-                        inicioMonitoramento: inicioEvento,
-                        fimMonitoramento: fimEvento || inicioEvento,
-                    };
-                }
-
-                if (codEvento === 264 && fimEvento) {
-                    const minutosEvento = (fimEvento - inicioEvento) / (1000 * 60); // Duração em minutos
-                    equipamentos[equipamento].totalMinutosOperacao += minutosEvento;
-                }
-
-                if (inicioEvento < equipamentos[equipamento].inicioMonitoramento) {
-                    equipamentos[equipamento].inicioMonitoramento = inicioEvento;
-                }
-                if (fimEvento && fimEvento > equipamentos[equipamento].fimMonitoramento) {
-                    equipamentos[equipamento].fimMonitoramento = fimEvento;
-                }
-            });
-
-            Object.keys(equipamentos).forEach(equipamento => {
-                const totalMinutosOperacao = equipamentos[equipamento].totalMinutosOperacao;
-                const totalMinutosMonitoramento = (equipamentos[equipamento].fimMonitoramento - equipamentos[equipamento].inicioMonitoramento) / (1000 * 60); // Duração em minutos
-                const taxaDisponibilidade = (totalMinutosOperacao * 100.0) / totalMinutosMonitoramento;
-                const diasMonitoramento = totalMinutosMonitoramento / (60 * 24);
-
-                resultados.push({
-                    Equipamento: equipamento,
-                    TaxaDisponibilidadePercentual: taxaDisponibilidade,
-                    DiasMonitoramento: diasMonitoramento,
-                });
-            });
-
-            resultados.sort((a, b) => {
-                const equipA = parseInt(a.Equipamento.replace("P", ""));
-                const equipB = parseInt(b.Equipamento.replace("P", ""));
-                return equipA - equipB;
-            });
-
-            console.log('resultadosdispon', resultados);
-            return resultados;
-        }
-
-        function renderNumberBreakdowns(data) {
+        function renderNumberBreakdowns(data, formattedStartDate, formattedEndDate, temData) {
             const numberBreakdowns = document.getElementById('numberBreakdowns');
-            var filtrada = data.filter((i) => i.CodEvento == '414');
-            const totalBreakdowns = filtrada.length
-            console.log('totvr', totalBreakdowns)
-            numberBreakdowns.textContent = totalBreakdowns;
+            if(!temData)
+            {
+                var total = data == 0 ? alasql("SELECT SUM(NumeroDeQuebras) AS TotalQuebras FROM (    SELECT Equipamento, COUNT(*) AS NumeroDeQuebras FROM eventos WHERE CodEvento = '414' and FimEvento IS NOT NULL   GROUP BY Equipamento) AS Subquery;") :
+                alasql(`SELECT Equipamento, COUNT(*) AS NumeroDeQuebras FROM eventos WHERE CodEvento = '414' AND Equipamento == '${data}' AND  FimEvento IS NOT NULL GROUP BY Equipamento`)
+                numberBreakdowns.textContent = data == 0 ? total[0].TotalQuebras : total[0].NumeroDeQuebras;
+            }else{
+                var total = data == 0 ? alasql(`
+                SELECT SUM(NumeroDeQuebras) AS TotalQuebras
+                FROM (    SELECT Equipamento, COUNT(*) AS NumeroDeQuebras FROM eventos WHERE CodEvento = '414'
+                AND FimEvento IS NOT NULL 
+                AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY Equipamento) AS Subquery;
+                `) 
+                :
+                alasql(`
+                SELECT Equipamento, COUNT(*) AS NumeroDeQuebras
+                 FROM eventos WHERE CodEvento = '414' 
+                 AND Equipamento == '${data}'  AND FimEvento IS NOT NULL             
+                 AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                 AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                 GROUP BY Equipamento
+                `)
+                console.log('tot', total)
+                numberBreakdowns.textContent = data == 0 ? total[0].TotalQuebras : total.length > 0 ? total[0].NumeroDeQuebras : 0
+            }
+
+           
         }
 
-        function renderNumberPreventiveMaintenances(data) {
+        function renderNumberPreventiveMaintenances(data, formattedStartDate, formattedEndDate, temData) {
             const numberPreventiveMaintenances = document.getElementById('numberPreventiveMaintenances');
-            var filtrada = data.filter((i) => i.CodEvento == '241');
-            const totalPreventiveMaintenances = filtrada.length
-            numberPreventiveMaintenances.textContent = totalPreventiveMaintenances;
+            if(!temData)
+            {
+                var total = data == 0 ? alasql(`
+                SELECT SUM(NumeroDeManutencoesPreventivas) AS TotalManutencoesPreventivas FROM ( SELECT COUNT(*) AS NumeroDeManutencoesPreventivas FROM eventos WHERE CodEvento = '241'  GROUP BY Equipamento) AS Subquery;
+                `) :
+                alasql(`
+                SELECT COUNT(*) AS NumeroDeManutencoesPreventivas FROM eventos 
+                WHERE CodEvento = '241' AND Equipamento == '${data}' GROUP BY Equipamento;`)
+                numberPreventiveMaintenances.textContent = data == 0 ? total[0].TotalManutencoesPreventivas :  total.length > 0 ? total[0].NumeroDeManutencoesPreventivas : 0
+            }else{
+                var total = data == 0 ? alasql(`
+                SELECT SUM(NumeroDeManutencoesPreventivas) AS TotalManutencoesPreventivas FROM ( SELECT COUNT(*) AS NumeroDeManutencoesPreventivas FROM eventos WHERE CodEvento = '241'  
+                 AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY Equipamento) AS Subquery;
+                `) :
+                alasql(`
+                SELECT COUNT(*) AS NumeroDeManutencoesPreventivas FROM eventos 
+                WHERE CodEvento = '241' AND Equipamento == '${data}'
+                AND DATE(CONVERT(datetime, SUBSTRING(InicioEvento, 7, 4) + '-' + SUBSTRING(InicioEvento, 4, 2) + '-' + SUBSTRING(InicioEvento, 1, 2) + ' ' + SUBSTRING(InicioEvento, 12, 8))) >= DATE(CONVERT(datetime, SUBSTRING('${formattedStartDate}', 7, 4) + '-' + SUBSTRING('${formattedStartDate}', 4, 2) + '-' + SUBSTRING('${formattedStartDate}', 1, 2) + ' ' + SUBSTRING('${formattedStartDate}', 12, 8)))
+                AND DATE(CONVERT(datetime, SUBSTRING(FimEvento, 7, 4) + '-' + SUBSTRING(FimEvento, 4, 2) + '-' + SUBSTRING(FimEvento, 1, 2) + ' ' + SUBSTRING(FimEvento, 12, 8))) <= DATE(CONVERT(datetime, SUBSTRING('${formattedEndDate}', 7, 4) + '-' + SUBSTRING('${formattedEndDate}', 4, 2) + '-' + SUBSTRING('${formattedEndDate}', 1, 2) + ' ' + SUBSTRING('${formattedEndDate}', 12, 8)))
+                GROUP BY Equipamento;`)
+               
+                numberPreventiveMaintenances.textContent = data == 0 ? total[0].TotalManutencoesPreventivas : total.length > 0 ? total[0].NumeroDeManutencoesPreventivas : 0
+            }
+
         }
 
         function renderTotalEquipment(data) {
             const totalEquipment = document.getElementById('totalEquipment');
-            const uniqueEquipment = [...new Set(data.map(item => item.Equipamento))];
-            totalEquipment.textContent = uniqueEquipment.length;
+            var total = alasql("SELECT COUNT(DISTINCT Equipamento) AS TotalEquipamentos FROM eventos;")
+            totalEquipment.textContent = total[0].TotalEquipamentos;
         }
+
+        function adjustDate(date, endOfDay = false) {
+            let d = new Date(date + 'T00:00:00'); // Ajusta a data para o início do dia
+            if (endOfDay) {
+                d.setHours(23, 59, 59); // Ajusta a hora para o final do dia
+            }
+            let day = ("0" + d.getDate()).slice(-2);
+            let month = ("0" + (d.getMonth() + 1)).slice(-2);
+            let year = d.getFullYear();
+            let time = endOfDay ? '23:59:59' : '00:00:00';
+
+            return `${day}/${month}/${year} ${time}`;
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            document.getElementById('btnFiltrar').addEventListener('click', function () {
+                var startDateValue = document.getElementById('startDate').value;
+                var endDateValue = document.getElementById('endDate').value;
+                const selectEquipment = document.getElementById('selectEquipment');
+                const selectedEquipment = selectEquipment.value;
+                console.log('Data limpa:', startDateValue, endDateValue);
+                if (startDateValue != "" && endDateValue != "") {
+                    var formattedStartDate = adjustDate(startDateValue);
+                    var formattedEndDate = adjustDate(endDateValue, true);
+
+                    console.log('Data de Início selecionada:', formattedStartDate);
+                    console.log('Data Final selecionada:', formattedEndDate);
+                   
+                    destroyCharts();
+                    renderMetrics(selectedEquipment, formattedStartDate, formattedEndDate, true);
+                }else{
+                    destroyCharts();
+                    renderMetrics(selectedEquipment, "", "", false);
+                }
+
+            });
+        });
+
     </script>
 </head>
 
@@ -582,7 +614,25 @@
                     </select>
                 </div>
             </div>
+            <div class="col-md-3">
+                <div class="form-group">
+                    <label for="startDate">Data de Início:</label>
+                    <input type="date" id="startDate" class="form-control">
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="form-group">
+                    <label for="endDate">Data Final:</label>
+                    <input type="date" id="endDate" class="form-control">
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="form-group">
+                    <button class="btn btn-primary mt-4" id="btnFiltrar">Filtrar</button>
+                </div>
+            </div>
         </div>
+
         <div class="row mt-4">
             <div class="col-md-6">
                 <div class="card">
@@ -597,7 +647,7 @@
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-body">
-                        <h5 class="card-title">Número Total de Quebras</h5>
+                        <h5 class="card-title">Número Total de Falhas (Corrigidas)</h5>
                         <p class="card-text" id="numberBreakdowns">-</p>
                     </div>
                 </div>
@@ -632,7 +682,7 @@
 
         </div>
         <div class="row mt-4">
-           
+
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-body">
@@ -651,12 +701,22 @@
             </div>
         </div>
         <div class="row mt-4">
-            
+
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-body">
-                        <h5 class="card-title">Taxa de Falhas por Dia (%)</h5>
+                        <h5 id="taxaFalhasPorDia" class="card-title">Taxa de Falhas por Dia (%) <span
+                                id="valorTaxaFalhas"></span></h5>
                         <canvas id="chartAvailability" height="150"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-body">
+                        <h5 id="taxaFalhasPorDia" class="card-title">Taxa de Dias Equipamentos Com falhas Ativas<span
+                                id="FalhasAtivas"></span></h5>
+                        <canvas id="chartFalhasAtivas" height="150"></canvas>
                     </div>
                 </div>
             </div>
